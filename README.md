@@ -21,7 +21,19 @@ npm run build
 
 ## Deployment
 
-Set `VITE_API_BASE_URL` if the deployed app should call a different same-origin backend or API proxy.
+The app uses `/api` as its browser-facing API base. In local development, Vite proxies that path. In AWS Amplify Hosting, add a rewrite before the SPA fallback:
+
+| Source address | Target address | Type |
+| --- | --- | --- |
+| `/api/<*>` | `https://api.jgrants-portal.go.jp/exp/<*>` | `200 (Rewrite)` |
+
+Keep the normal SPA fallback after it:
+
+| Source address | Target address | Type |
+| --- | --- | --- |
+| `</^[^.]+$|\.(?!(css|gif|ico|jpg|jpeg|js|png|txt|svg|woff|woff2|ttf|map|json)$)([^.]+$)/>` | `/index.html` | `200 (Rewrite)` |
+
+If you use your own backend proxy instead, set `VITE_API_BASE_URL` to that same-origin path or URL.
 
 ```bash
 VITE_API_BASE_URL=/api npm run build

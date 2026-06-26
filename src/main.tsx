@@ -341,12 +341,18 @@ function isDeadlineSoon(value?: string) {
 }
 
 async function readJson<T>(response: Response): Promise<ApiResponse<T>> {
+  const contentType = response.headers.get("content-type") || "";
   const text = await response.text();
   if (!text) return {};
+  if (contentType.includes("text/html") || /^\s*<!doctype html/i.test(text)) {
+    throw new Error(
+      "API proxy is returning the React app HTML. Configure the production host to rewrite /api/* to the JGrants API.",
+    );
+  }
   try {
     return JSON.parse(text) as ApiResponse<T>;
   } catch {
-    throw new Error(text);
+    throw new Error(text.slice(0, 300));
   }
 }
 
