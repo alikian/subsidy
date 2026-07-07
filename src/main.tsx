@@ -2,18 +2,25 @@ import React, { FormEvent, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   ArrowDownUp,
+  Bot,
   Download,
   ExternalLink,
   FileText,
   Filter,
   Loader2,
+  MessageCircle,
   RefreshCw,
   Search,
+  Send,
+  Sparkles,
+  User,
   X,
 } from "lucide-react";
 import "./styles.css";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "/api";
+const AI_API_BASE_URL =
+  import.meta.env.VITE_AI_API_BASE_URL || "https://etox6lj346.execute-api.ap-northeast-1.amazonaws.com";
 
 const employeeOptions = [
   "従業員数の制約なし",
@@ -206,6 +213,31 @@ type SearchState = {
   institution_name: string;
 };
 
+type ChatRole = "assistant" | "user";
+
+type ChatMessage = {
+  id: string;
+  role: ChatRole;
+  text: string;
+  recommendations?: ChatRecommendation[];
+};
+
+type ChatRecommendation = {
+  id: string;
+  title: string;
+  institution?: string;
+  deadline?: string;
+  amount?: number;
+  area?: string;
+  reason?: string;
+  url?: string;
+};
+
+type ChatResponse = {
+  answer: string;
+  recommendations?: ChatRecommendation[];
+};
+
 const initialSearch: SearchState = {
   keyword: "IT",
   acceptance: "1",
@@ -386,6 +418,25 @@ async function loadSubsidyDetail(id: string) {
   return apiGet<SubsidyDetail>(`/v2/public/subsidies/id/${encodeURIComponent(id)}`);
 }
 
+async function sendChatMessage(message: string, history: ChatMessage[]) {
+  const response = await fetch(`${AI_API_BASE_URL}/chat`, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      message,
+      history: history.slice(-8).map(({ role, text }) => ({ role, content: text })),
+    }),
+  });
+  const data = (await response.json().catch(() => ({}))) as Partial<ChatResponse> & { message?: string };
+  if (!response.ok) {
+    throw new Error(data.message || `Chat API error: ${response.status}`);
+  }
+  return data as ChatResponse;
+}
+
 function downloadFile(file: ResultFile) {
   if (!file.data) return;
   const byteCharacters = atob(file.data);
@@ -550,7 +601,169 @@ function DetailPanel({
   );
 }
 
-function App() {
+const promptSuggestions = [
+  "東京都でIT導入に使える補助金を教えて",
+  "製造業で設備投資に使える受付中の制度は？",
+  "小規模事業者向けで締切が近いものを探して",
+];
+
+function ChatRecommendationCard({ item }: { item: ChatRecommendation }) {
+  return (
+    <article className="chat-recommendation">
+      <div className="chat-recommendation-main">
+        <span className="subsidy-code">{item.id}</span>
+        <h3>{item.title}</h3>
+        <p>{item.reason || item.institution || "条件に合いそうな補助金です。"}</p>
+      </div>
+      <div className="chat-recommendation-meta">
+        <span>{formatAmount(item.amount)}</span>
+        <span>{item.area || "地域未設定"}</span>
+        <span>締切 {formatDate(item.deadline)}</span>
+      </div>
+      {item.url && (
+        <a className="external-link compact" href={item.url} target="_blank" rel="noreferrer">
+          <ExternalLink size={15} />
+          詳細
+        </a>
+      )}
+    </article>
+  );
+}
+
+function ChatApp() {
+  const [messages, setMessages] = useState<ChatMessage[]>([
+    {
+      id: "welcome",
+      role: "assistant",
+      text:
+        "補助金候補を探すために、いくつか確認します。まず、事業内容、対象地域、業種、従業員数、補助金の使い道を分かる範囲で教えてください。",
+    },
+  ]);
+  const [input, setInput] = useState("");
+  const [isSending, setIsSending] = useState(false);
+  const [error, setError] = useState<string>();
+
+  async function submitChat(event?: FormEvent, suggestedPrompt?: string) {
+    event?.preventDefault();
+    const text = (suggestedPrompt || input).trim();
+    if (!text || isSending) return;
+
+    const userMessage: ChatMessage = { id: crypto.randomUUID(), role: "user", text };
+    const nextMessages = [...messages, userMessage];
+    setMessages(nextMessages);
+    setInput("");
+    setIsSending(true);
+    setError(undefined);
+
+    try {
+      const data = await sendChatMessage(text, messages);
+      setMessages([
+        ...nextMessages,
+        {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          text: data.answer,
+          recommendations: data.recommendations ?? [],
+        },
+      ]);
+    } catch (chatError) {
+      setError(chatError instanceof Error ? chatError.message : "チャット応答に失敗しました。");
+      setMessages(nextMessages);
+    } finally {
+      setIsSending(false);
+    }
+  }
+
+  return (
+    <main className="ai-shell">
+      <header className="ai-topbar">
+        <div>
+          <p className="eyebrow">AI subsidy assistant</p>
+          <h1>補助金チャット</h1>
+        </div>
+        <nav className="top-actions" aria-label="アプリ切り替え">
+          <a className="ghost-button" href="/" title="検索画面へ戻る">
+            <Search size={17} />
+            <span>検索</span>
+          </a>
+          <div className="api-chip">/sam/chat</div>
+        </nav>
+      </header>
+
+      <section className="chat-layout">
+        <aside className="chat-context">
+          <div className="context-block">
+            <Sparkles size={22} />
+            <h2>相談のコツ</h2>
+            <p>地域、業種、資金の使い道、従業員数、締切の希望を入れると候補を絞りやすくなります。</p>
+          </div>
+          <div className="suggestion-list">
+            {promptSuggestions.map((prompt) => (
+              <button
+                className="suggestion-button"
+                key={prompt}
+                type="button"
+                onClick={() => submitChat(undefined, prompt)}
+                disabled={isSending}
+              >
+                <MessageCircle size={16} />
+                <span>{prompt}</span>
+              </button>
+            ))}
+          </div>
+        </aside>
+
+        <section className="chat-panel" aria-live="polite">
+          <div className="message-list">
+            {messages.map((message) => (
+              <article className={`message message-${message.role}`} key={message.id}>
+                <div className="message-avatar">{message.role === "assistant" ? <Bot size={18} /> : <User size={18} />}</div>
+                <div className="message-body">
+                  <p>{message.text}</p>
+                  {!!message.recommendations?.length && (
+                    <div className="chat-recommendations">
+                      {message.recommendations.map((item) => (
+                        <ChatRecommendationCard item={item} key={`${item.id}-${item.title}`} />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </article>
+            ))}
+            {isSending && (
+              <article className="message message-assistant">
+                <div className="message-avatar">
+                  <Bot size={18} />
+                </div>
+                <div className="message-body typing">
+                  <Loader2 className="spin" size={18} />
+                  <span>JGrantsから候補を確認しています</span>
+                </div>
+              </article>
+            )}
+          </div>
+
+          {error && <div className="error-banner">{error}</div>}
+
+          <form className="chat-composer" onSubmit={submitChat}>
+            <input
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              placeholder="例: 大阪の飲食店で省エネ設備に使える補助金は？"
+              disabled={isSending}
+            />
+            <button className="primary-button" type="submit" disabled={!input.trim() || isSending} title="送信">
+              {isSending ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
+              <span>送信</span>
+            </button>
+          </form>
+        </section>
+      </section>
+    </main>
+  );
+}
+
+function SearchApp() {
   const [search, setSearch] = useState<SearchState>(initialSearch);
   const [items, setItems] = useState<SubsidySummary[]>([]);
   const [count, setCount] = useState(0);
@@ -619,7 +832,13 @@ function App() {
             <p className="eyebrow">jGrants public API</p>
             <h1>補助金検索</h1>
           </div>
-          <div className="api-chip">/v1/public/subsidies</div>
+          <nav className="top-actions" aria-label="アプリ切り替え">
+            <a className="ghost-button" href="/ai" title="AIチャットを開く">
+              <Bot size={17} />
+              <span>AI相談</span>
+            </a>
+            <div className="api-chip">/v1/public/subsidies</div>
+          </nav>
         </header>
 
         <form className="filters" onSubmit={submit}>
@@ -807,6 +1026,10 @@ function App() {
       }} />
     </main>
   );
+}
+
+function App() {
+  return window.location.pathname === "/ai" ? <ChatApp /> : <SearchApp />;
 }
 
 createRoot(document.getElementById("root")!).render(<App />);

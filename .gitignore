@@ -13,3 +13,7 @@ pnpm-debug.log*
 .DS_Store
 .vite/
 coverage/
+.aws-sam/
+backend/.aws-sam/
+__pycache__/
+*.py[cod]
