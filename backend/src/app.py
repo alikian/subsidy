@@ -9,30 +9,105 @@ JGRANTS_BASE_URL = os.environ.get("JGRANTS_BASE_URL", "https://api.jgrants-porta
 BEDROCK_MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0")
 ENABLE_LLM = os.environ.get("ENABLE_LLM", "true").lower() == "true"
 
-SYSTEM_PROMPT = """あなたは日本の補助金申請に詳しいAIアシスタントです。
-目的は、JGrants公開APIで候補検索できるだけの情報を会話で集めることです。
+SYSTEM_PROMPT = """あなたは「e-hojokin.ai」の補助金検索アシスタントです。
+ユーザーとの会話から JグランツAPI で補助金候補を検索する条件を整理します。
+制度名を最初から断定せず 条件が揃ったら ready を true にします。
 
-必ず守ること:
-- 最初から制度を断定せず、足りない情報があれば自然な日本語で1つか2つだけ質問する。
-- 必要情報は business_summary, target_area_search, industry, use_purpose, target_number_of_employees, keyword。
-- target_area_search は都道府県または全国。
-- industry と use_purpose は、提示された選択肢に最も近い正式名称に正規化する。
-- 十分に情報が揃ったら ready を true にする。
-- 出力はJSONだけ。説明文やMarkdownは出さない。
+# 出力ルール
+- 出力は常にJSONのみ。Markdown・説明文・コードブロックは絶対に出さない。
+- ユーザーに見せる文章は必ず message に入れる。フロントは message だけを表示する。
+- 質問は1回につき1〜2個まで。質問は会話全体で2ターンまで。
+- すでにユーザーが言った情報は再質問しない。
 
-JSON schema:
+# 短い回答の解釈（重要）
+直前に自分がした質問の文脈でユーザーの短い回答を解釈する:
+- 従業員数を聞いた直後の「50」「50人」「約50名」「50くらい」→ すべて従業員数50
+- 地域を聞いた直後の「東京」→ target_area_search: 東京都
+- 使い道を聞いた直後の「エアコン」→ use_purpose: 省エネ
+数詞や単位がなくても文脈から確定できる場合は確定させ 同じ質問を繰り返さない。
+
+# 集める情報
+
+1. business_summary — 事業内容の短い要約（内部用 検索には送らない）
+
+2. target_area_search — 都道府県名または「全国」に正規化
+   東京 → 東京都 / 大阪 → 大阪府 / 全国対応 → 全国
+
+3. industry — JグランツAPIの完全一致値のみ使用（読点は全角「，」）:
+   農業，林業 / 漁業 / 建設業 / 製造業 / 情報通信業 / 運輸業，郵便業 /
+   卸売業，小売業 / 金融業，保険業 / 不動産業，物品賃貸業 /
+   宿泊業，飲食サービス業 / 生活関連サービス業，娯楽業 /
+   教育，学習支援業 / 医療，福祉 / サービス業（他に分類されないもの）
+   例: カフェ・レストラン → 宿泊業，飲食サービス業 / ネットショップ → 卸売業，小売業 /
+   工場・部品加工 → 製造業 / IT・システム開発 → 情報通信業 /
+   介護 → 医療，福祉 / コンサル・士業 → サービス業（他に分類されないもの）
+   確信が持てない場合は "" のまま（絞らない方が安全）
+
+4. use_purpose — 内部用。keyword生成に使う。検索には送らない。
+   AI導入・システム・EC → IT導入 / 機械・厨房・製造ライン → 設備投資 /
+   HP・広告・展示会・海外展開 → 販路開拓 / 研修・採用 → 人材育成 /
+   空調・LED・電気代 → 省エネ / 新商品・試作 → 新規事業 / 改装・内装 → 店舗改装
+
+5. target_number_of_employees — 数値で保持（「50」だけでも受け付ける）
+   target_number_of_employees_band — APIに送る帯に変換:
+   〜5 → 5名以下 / 6〜20 → 20名以下 / 21〜50 → 50名以下 /
+   51〜100 → 100名以下 / 101〜300 → 300名以下 / 不明 → 従業員の制約なし
+
+6. keyword — 1〜2語の短い日本語。最重要。
+   地域名・業種名・「補助金」という語は入れない（別パラメータと重複し0件になる）
+   use_purpose から公募頻出語を選ぶ: 省エネ / IT導入 / 設備投資 / 販路開拓 / 人材育成 / 事業承継
+   どうしても作れない場合は「事業」にする（空にしない）
+
+# ready 判定
+- keyword と target_area_search が揃ったら ready を true にする。
+- industry と従業員数は任意。なくても検索する。
+- 2ターン質問した後は 分かっている情報だけで ready を true にする。
+- ready が true のとき message は「条件が揃いました。補助金候補を検索します。」
+- 補助金と無関係な入力には message で一言だけ話題を戻す。
+
+# 出力JSON形式
 {
-  "ready": boolean,
-  "profile": {
-    "business_summary": string,
-    "target_area_search": string,
-    "industry": string,
-    "use_purpose": string,
-    "target_number_of_employees": string,
-    "keyword": string
-  },
-  "missing": string[],
-  "question": string
+  "ready": false,
+  "message": "",
+  "business_summary": "",
+  "target_area_search": "",
+  "industry": "",
+  "use_purpose": "",
+  "target_number_of_employees": null,
+  "target_number_of_employees_band": "",
+  "keyword": "",
+  "missing_fields": []
+}
+
+例1:
+ユーザー: 東京都でIT導入に使える補助金を教えて
+{
+  "ready": true,
+  "message": "条件が揃いました。補助金候補を検索します。",
+  "business_summary": "",
+  "target_area_search": "東京都",
+  "industry": "",
+  "use_purpose": "IT導入",
+  "target_number_of_employees": null,
+  "target_number_of_employees_band": "従業員の制約なし",
+  "keyword": "IT導入",
+  "missing_fields": []
+}
+
+例2:
+（直前のAI質問: 従業員数を教えてください）
+ユーザー: 50
+{
+  "ready": true,
+  "message": "条件が揃いました。補助金候補を検索します。",
+  "business_summary": "大阪府でカフェを運営",
+  "target_area_search": "大阪府",
+  "industry": "宿泊業，飲食サービス業",
+  "use_purpose": "省エネ",
+  "target_number_of_employees": 50,
+  "target_number_of_employees_band": "50名以下",
+  "keyword": "省エネ",
+  "missing_fields": []
 }
 """
 
@@ -44,6 +119,7 @@ REQUIRED_PROFILE_FIELDS = [
     "target_number_of_employees",
     "keyword",
 ]
+SEARCH_REQUIRED_FIELDS = ["target_area_search", "keyword"]
 
 AREA_KEYWORDS = [
     "全国",
@@ -97,6 +173,7 @@ AREA_KEYWORDS = [
 ]
 
 PURPOSE_HINTS = {
+    "IT導入": "設備整備・IT導入をしたい",
     "IT": "設備整備・IT導入をしたい",
     "DX": "設備整備・IT導入をしたい",
     "システム": "設備整備・IT導入をしたい",
@@ -123,8 +200,11 @@ INDUSTRY_HINTS = {
     "漁業": "漁業",
     "医療": "医療、福祉",
     "福祉": "医療、福祉",
-    "IT": "情報通信業",
     "情報通信": "情報通信業",
+    "IT企業": "情報通信業",
+    "システム開発": "情報通信業",
+    "ソフトウェア": "情報通信業",
+    "アプリ開発": "情報通信業",
 }
 
 
@@ -193,15 +273,20 @@ def get_intake_decision(message, history):
     heuristic_profile = infer_profile(conversation)
     llm_decision = invoke_intake_llm(message, history)
     if llm_decision:
-        profile = merge_profiles(heuristic_profile, clean_profile(llm_decision.get("profile")))
+        llm_profile = extract_llm_profile(llm_decision)
+        profile = sanitize_profile(merge_profiles(heuristic_profile, llm_profile), conversation)
         missing = missing_fields(profile)
+        llm_missing = llm_decision.get("missing_fields") or llm_decision.get("missing")
+        if isinstance(llm_missing, list):
+            missing = [str(field) for field in llm_missing if str(field) in SEARCH_REQUIRED_FIELDS]
         return {
-            "ready": len(missing) == 0,
+            "ready": bool(llm_decision.get("ready")) and len(missing) == 0,
             "profile": profile,
             "missing": missing,
-            "question": llm_decision.get("question") or next_question(missing, profile),
+            "question": llm_decision.get("message") or llm_decision.get("question") or next_question(missing, profile),
         }
 
+    heuristic_profile = sanitize_profile(heuristic_profile, conversation)
     missing = missing_fields(heuristic_profile)
     return {
         "ready": len(missing) == 0,
@@ -303,6 +388,22 @@ def clean_profile(profile):
     return cleaned
 
 
+def extract_llm_profile(decision):
+    if not isinstance(decision, dict):
+        return {}
+
+    profile = decision.get("profile") if isinstance(decision.get("profile"), dict) else {}
+    merged = dict(profile)
+    for field in REQUIRED_PROFILE_FIELDS:
+        if decision.get(field) not in (None, ""):
+            merged[field] = decision.get(field)
+    if decision.get("target_number_of_employees_band"):
+        merged["target_number_of_employees"] = decision["target_number_of_employees_band"]
+    elif decision.get("target_number_of_employees") not in (None, ""):
+        merged["target_number_of_employees"] = employee_band(decision["target_number_of_employees"])
+    return merged
+
+
 def merge_profiles(primary, secondary):
     merged = clean_profile(primary)
     for key, value in clean_profile(secondary).items():
@@ -311,9 +412,48 @@ def merge_profiles(primary, secondary):
     return merged
 
 
+def sanitize_profile(profile, conversation):
+    profile = clean_profile(profile)
+    if profile.get("industry") == "情報通信業" and is_it_adoption_request(conversation):
+        profile["industry"] = ""
+    if profile.get("keyword") == "IT":
+        profile["keyword"] = "IT導入"
+    return profile
+
+
+def is_it_adoption_request(text):
+    if not re.search(r"(IT導入|DX|システム導入|デジタル化)", text, re.IGNORECASE):
+        return False
+    explicit_it_industry = re.search(r"(情報通信業|IT企業|システム開発|ソフトウェア|アプリ開発|Web制作)", text, re.IGNORECASE)
+    return explicit_it_industry is None
+
+
+def employee_band(value):
+    if isinstance(value, str) and value.endswith("以下"):
+        return value
+    match = re.search(r"\d+", str(value))
+    if not match:
+        return ""
+    employee_count = int(match.group(0))
+    if employee_count <= 5:
+        return "5名以下"
+    if employee_count <= 20:
+        return "20名以下"
+    if employee_count <= 50:
+        return "50名以下"
+    if employee_count <= 100:
+        return "100名以下"
+    if employee_count <= 300:
+        return "300名以下"
+    if employee_count <= 900:
+        return "900名以下"
+    return "901名以上"
+
+
 def missing_fields(profile):
-    missing = [field for field in REQUIRED_PROFILE_FIELDS if not profile.get(field)]
-    if profile.get("keyword") in {"補助金", "助成金", "制度"}:
+    missing = [field for field in SEARCH_REQUIRED_FIELDS if not profile.get(field)]
+    keyword = profile.get("keyword", "")
+    if not keyword or any(token in keyword for token in ["補助金", "助成金", "制度"]):
         missing.append("keyword")
     return list(dict.fromkeys(missing))
 
@@ -349,7 +489,6 @@ def criteria_from_profile(profile):
         "acceptance": "1",
     }
     for source, target in [
-        ("use_purpose", "use_purpose"),
         ("industry", "industry"),
         ("target_number_of_employees", "target_number_of_employees"),
         ("target_area_search", "target_area_search"),
@@ -411,12 +550,16 @@ def pick_keyword(message):
             return hint[:64]
 
     candidates = re.findall(r"[A-Za-z0-9]{2,}|[\u3040-\u30ff\u3400-\u9fff]{2,}", message)
-    ignored = {"補助金", "助成金", "制度", "教えて", "ください", "受付中", "使える", "探して"}
+    ignored = {"補助金", "助成金", "制度", "教えて", "ください", "受付中", "使える", "探して", "探したい"}
     for candidate in candidates:
         normalized = re.sub(r"(で|に|の|を|は)$", "", candidate)
-        if normalized not in ignored and normalized not in AREA_KEYWORDS:
+        if (
+            normalized not in ignored
+            and normalized not in AREA_KEYWORDS
+            and not any(token in normalized for token in ["補助金", "助成金", "制度"])
+        ):
             return normalized[:64]
-    return "IT"
+    return ""
 
 
 def search_jgrants(criteria):
