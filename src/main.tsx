@@ -635,8 +635,7 @@ function ChatApp() {
     {
       id: "welcome",
       role: "assistant",
-      text:
-        "補助金候補を探すために、いくつか確認します。まず、事業内容、対象地域、業種、従業員数、補助金の使い道を分かる範囲で教えてください。",
+      text: "お探しの補助金の募集期間はご存じでしょうか？\n例：募集中、来月まで、未定など",
     },
   ]);
   const [input, setInput] = useState("");
@@ -695,7 +694,7 @@ function ChatApp() {
           <div className="context-block">
             <Sparkles size={22} />
             <h2>相談のコツ</h2>
-            <p>地域、業種、資金の使い道、従業員数、締切の希望を入れると候補を絞りやすくなります。</p>
+            <p>募集期間、地域、従業員数、利用目的、業種、制度名の順に確認します。</p>
           </div>
           <div className="suggestion-list">
             {promptSuggestions.map((prompt) => (
